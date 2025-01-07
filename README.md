@@ -36,4 +36,4 @@ In light of all these firsts, there will invariably be parts I mess up.
 I am building StableKeepr because it is something that I want to use,
 and my hope is that it will be useful to others as well.
 I would love to be able to work on StableKeepr and things like it full time,
-but I have yet to work out a monetization strategy.
+but I have yet to work out how to make the project sustainable.
