@@ -5,18 +5,23 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/image/draw"
 	"image"
 	"image/png"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
+	"golang.org/x/image/draw"
+
 	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/menu"
+	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed all:frontend/dist
@@ -32,7 +37,7 @@ type settings struct {
 }
 
 func main() {
-	err, s := getSettings()
+	s, err := getSettings()
 	if err != nil {
 		println("Error getting settings:", err.Error())
 		return
@@ -41,12 +46,35 @@ func main() {
 	// Create an instance of the app structure
 	app := NewApp(s)
 
+	AppMenu := menu.NewMenu()
+	FileMenu := AppMenu.AddSubmenu("File")
+	FileMenu.AddText("&Open", keys.CmdOrCtrl("o"), func(_ *menu.CallbackData) {
+		imageDirectory, err := runtime.OpenDirectoryDialog(app.ctx, runtime.OpenDialogOptions{})
+		if err != nil {
+			println("Error opening image directory: ", err.Error())
+		}
+		if !slices.Contains(s.ImageDirectories, imageDirectory) {
+			s.ImageDirectories = append(s.ImageDirectories, imageDirectory)
+			configDir, _ := os.UserConfigDir()
+			configPath := filepath.Join(configDir, "StableKeepr")
+			configPath = filepath.Join(configPath, "config.json")
+			writeSettings(&s, configPath)
+			// TODO: Now that we have configured the settings and saved it off, how do we handle refreshing the frontend?
+			app.GetListOfImages()
+		}
+	})
+	FileMenu.AddSeparator()
+	FileMenu.AddText("Quit", keys.CmdOrCtrl("q"), func(_ *menu.CallbackData) {
+		runtime.Quit(app.ctx)
+	})
+
 	// Create application with options
 	err = wails.Run(&options.App{
 		Title:      "StableKeepr",
 		Width:      s.WindowWidth,
 		Height:     s.WindowHeight,
 		Fullscreen: s.WindowMaximized,
+		Menu:       AppMenu,
 		AssetServer: &assetserver.Options{
 			Assets:  assets,
 			Handler: newLocalAssetHandler(s.ImageDirectories),
@@ -63,28 +91,22 @@ func main() {
 	}
 }
 
-func getSettings() (error, settings) {
+func getSettings() (settings, error) {
 	// Get the config file from the user's config folder
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		println("Error getting user config directory:", err.Error())
-		return nil, settings{}
+		return settings{}, nil
 	}
 	configPath := filepath.Join(configDir, "StableKeepr")
 	err = os.MkdirAll(configPath, 0755)
 	if err != nil {
 		println("Error creating config directory:", err.Error())
-		return nil, settings{}
+		return settings{}, nil
 	}
 	configPath = filepath.Join(configPath, "config.json")
 	// Does the config file exist?
 	if _, err = os.Stat(configPath); os.IsNotExist(err) {
-		// Create the config file
-		file, err := os.Create(configPath)
-		if err != nil {
-			println("Error creating config file:", err.Error())
-			return nil, settings{}
-		}
 		// Write the config file
 		blankSettings := settings{
 			LogLevel:         "info",
@@ -93,30 +115,23 @@ func getSettings() (error, settings) {
 			WindowWidth:      1024,
 			WindowMaximized:  false,
 		}
-		jsonSettings, err := json.MarshalIndent(blankSettings, "", "    ")
+		err = writeSettings(&blankSettings, configPath)
 		if err != nil {
-			println("Error marshalling config file:", err.Error())
-			return nil, settings{}
-		}
-		_, err = file.Write(jsonSettings)
-		err = file.Close()
-		if err != nil {
-			println("Error closing config file:", err.Error())
-			return nil, settings{}
+			return settings{}, nil
 		}
 	}
 	// Read the config file
 	jsonSettings, err := os.ReadFile(configPath)
 	if err != nil {
 		println("Error reading config file:", err.Error())
-		return nil, settings{}
+		return settings{}, nil
 	}
 	// Unmarshal the config file
 	var s settings
 	err = json.Unmarshal(jsonSettings, &s)
 	if err != nil {
 		println("Error unmarshalling config file:", err.Error())
-		return nil, settings{}
+		return settings{}, nil
 	}
 	// Default the window size to 1024x768
 	if s.WindowWidth == 0 {
@@ -129,14 +144,40 @@ func getSettings() (error, settings) {
 	jsonSettings, err = json.MarshalIndent(s, "", "    ")
 	if err != nil {
 		println("Error marshalling config file:", err.Error())
-		return nil, settings{}
+		return settings{}, nil
 	}
 	err = os.WriteFile(configPath, jsonSettings, 0644)
 	if err != nil {
 		println("Error writing config file:", err.Error())
-		return nil, settings{}
+		return settings{}, nil
 	}
-	return err, s
+	return s, err
+}
+
+func writeSettings(s *settings, configPath string) error {
+	// Create the config file
+	file, err := os.Create(configPath)
+	if err != nil {
+		println("Error creating config file:", err.Error())
+		return err
+	}
+
+	jsonSettings, err := json.MarshalIndent(s, "", "    ")
+	if err != nil {
+		println("Error marshalling config file:", err.Error())
+		return err
+	}
+	_, err = file.Write(jsonSettings)
+	if err != nil {
+		println("Error writing config file: ", err.Error())
+		return err
+	}
+	err = file.Close()
+	if err != nil {
+		println("Error closing config file:", err.Error())
+		return err
+	}
+	return nil
 }
 
 // localAssetHandler is a http.HandlerFunc that serves local files from the given directories.
@@ -237,9 +278,6 @@ func (h localAssetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.ServeFile(w, r, file)
 				return
 			}
-			// Serve the file
-			http.ServeFile(w, r, file)
-			return
 		}
 	}
 	// If the path is a directory, return a 404
