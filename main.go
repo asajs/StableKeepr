@@ -48,16 +48,14 @@ func main() {
 
 	AppMenu := menu.NewMenu()
 	FileMenu := AppMenu.AddSubmenu("File")
-	FileMenu.AddText("&Open", keys.CmdOrCtrl("o"), func(_ *menu.CallbackData) {
+	FileMenu.AddText("Add folder", keys.CmdOrCtrl("a"), func(_ *menu.CallbackData) {
 		imageDirectory, err := runtime.OpenDirectoryDialog(app.ctx, runtime.OpenDialogOptions{})
 		if err != nil {
 			println("Error opening image directory: ", err.Error())
 		}
 		if !slices.Contains(s.ImageDirectories, imageDirectory) {
 			s.ImageDirectories = append(s.ImageDirectories, imageDirectory)
-			configDir, _ := os.UserConfigDir()
-			configPath := filepath.Join(configDir, "StableKeepr")
-			configPath = filepath.Join(configPath, "config.json")
+			configPath, _ := getSettingsPath()
 			writeSettings(&s, configPath)
 			// TODO: Now that we have configured the settings and saved it off, how do we handle refreshing the frontend?
 			app.GetListOfImages()
@@ -91,22 +89,29 @@ func main() {
 	}
 }
 
-func getSettings() (settings, error) {
+func getSettingsPath() (string, bool) {
 	// Get the config file from the user's config folder
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		println("Error getting user config directory:", err.Error())
-		return settings{}, nil
+		return "", false
 	}
 	configPath := filepath.Join(configDir, "StableKeepr")
 	err = os.MkdirAll(configPath, 0755)
 	if err != nil {
 		println("Error creating config directory:", err.Error())
-		return settings{}, nil
+		return "", false
 	}
 	configPath = filepath.Join(configPath, "config.json")
+	_, err = os.Stat(configPath)
+	doesFileNotExist := os.IsNotExist(err)
+	return configPath, doesFileNotExist
+}
+
+func getSettings() (settings, error) {
+	configPath, doesFileNotExist := getSettingsPath()
 	// Does the config file exist?
-	if _, err = os.Stat(configPath); os.IsNotExist(err) {
+	if doesFileNotExist {
 		// Write the config file
 		blankSettings := settings{
 			LogLevel:         "info",
@@ -115,7 +120,7 @@ func getSettings() (settings, error) {
 			WindowWidth:      1024,
 			WindowMaximized:  false,
 		}
-		err = writeSettings(&blankSettings, configPath)
+		err := writeSettings(&blankSettings, configPath)
 		if err != nil {
 			return settings{}, nil
 		}
@@ -126,12 +131,27 @@ func getSettings() (settings, error) {
 		println("Error reading config file:", err.Error())
 		return settings{}, nil
 	}
+
 	// Unmarshal the config file
 	var s settings
 	err = json.Unmarshal(jsonSettings, &s)
 	if err != nil {
 		println("Error unmarshalling config file:", err.Error())
 		return settings{}, nil
+	}
+
+	// Resave the settings
+	// Do we actually need to do this at this point?
+	writeSettings(&s, configPath)
+	return s, err
+}
+
+func writeSettings(s *settings, configPath string) error {
+	// Create the config file
+	file, err := os.OpenFile(configPath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		println("Error creating config file:", err.Error())
+		return err
 	}
 	// Default the window size to 1024x768
 	if s.WindowWidth == 0 {
@@ -140,28 +160,6 @@ func getSettings() (settings, error) {
 	if s.WindowHeight == 0 {
 		s.WindowHeight = 768
 	}
-	// resave the settings
-	jsonSettings, err = json.MarshalIndent(s, "", "    ")
-	if err != nil {
-		println("Error marshalling config file:", err.Error())
-		return settings{}, nil
-	}
-	err = os.WriteFile(configPath, jsonSettings, 0644)
-	if err != nil {
-		println("Error writing config file:", err.Error())
-		return settings{}, nil
-	}
-	return s, err
-}
-
-func writeSettings(s *settings, configPath string) error {
-	// Create the config file
-	file, err := os.Create(configPath)
-	if err != nil {
-		println("Error creating config file:", err.Error())
-		return err
-	}
-
 	jsonSettings, err := json.MarshalIndent(s, "", "    ")
 	if err != nil {
 		println("Error marshalling config file:", err.Error())
